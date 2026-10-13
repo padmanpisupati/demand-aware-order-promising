@@ -6,22 +6,24 @@ flowchart LR
     BO[(Backorder SKU table)]
     OL[(Order/delivery timing)]
   end
-  subgraph Graph["Promise graph (LangGraph / fallback)"]
-    S[check_supply<br/>ATP: on-hand, inbound, lead time]
-    R[score_risk<br/>logistic model + drivers]
-    P[propose<br/>full / split / alt date / substitute / escalate]
-    G[govern]
+  subgraph WF["Promise workflow (LangGraph optional / fallback runner)"]
+    C[1 retrieve_context<br/>ATP supply + logistic risk score + drivers]
+    P[2 decide_promise<br/>full / split / alt date / substitute / escalate]
+    G[3 policy_gate<br/>incl. HITL]
+    W[4 commit_or_escalate]
   end
   subgraph Gov["Governance (local, mirrors agcp)"]
-    PG[Policy gate<br/>default-deny rules P0-P9]
+    PG[Policy-as-code<br/>default-deny rules P0-P6]
     H[HITL planner]
     A[(Hash-chained audit)]
   end
   ERP[(Mock ERP promise ledger<br/>commit / cancel)]
-  BO --> S --> R --> P --> G
+  Q[Planner queue]
+  BO --> C --> P --> G --> W
   OL --> P
-  G --> PG --> H
-  PG -->|allow| ERP
-  H -->|approved| ERP
-  S & R & P & PG & H & ERP -.-> A
+  G --- PG
+  G --- H
+  W -->|commit, passing verdict only| ERP
+  W -->|escalate| Q
+  C & P & G & W -.-> A
 ```

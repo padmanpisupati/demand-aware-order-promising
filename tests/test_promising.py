@@ -122,7 +122,7 @@ def test_audit_tamper_detected():
 def test_demo_end_to_end(tmp_path, engine):
     r = run(n_skus=2000, n_lines=300, seed=3, engine=engine, out=str(tmp_path))
     assert r["engine"] == engine and r["audit_chain_valid"]
-    a, n = r["agent_committed"], r["naive_same_lines"]
+    a, n = r["workflow_committed"], r["naive_same_lines"]
     assert a["backorder_surprise_rate"] < n["backorder_surprise_rate"]
     assert a["otif_proxy"] > n["otif_proxy"]
     assert json.loads((tmp_path / "results.json").read_text())["lines"] == 300
@@ -131,7 +131,7 @@ def test_demo_end_to_end(tmp_path, engine):
 def test_engines_agree():
     a = run(n_skus=1500, n_lines=200, seed=5, engine="langgraph", out="/tmp/dop_a")
     b = run(n_skus=1500, n_lines=200, seed=5, engine="fallback", out="/tmp/dop_b")
-    assert a["outcomes"] == b["outcomes"] and a["agent_committed"] == b["agent_committed"]
+    assert a["outcomes"] == b["outcomes"] and a["workflow_committed"] == b["workflow_committed"]
 
 
 def test_agcp_adapter_mirrors_or_skips():
@@ -139,3 +139,33 @@ def test_agcp_adapter_mirrors_or_skips():
     sink = AgcpAuditSink(HashChainAudit())
     sink.record("e", "x", {})
     assert sink.verify() and isinstance(available(), bool)
+
+
+def test_workflow_has_four_fixed_steps():
+    from dop.graph import STEPS, FallbackRunner, build_workflow
+    wf, eng = build_workflow(RiskModel(), Guard(PromisePolicy(), HashChainAudit(), SimulatedPlanner(), PromiseLedger()),
+                             5, 8, engine="fallback")
+    assert eng == "fallback" and isinstance(wf, FallbackRunner)
+    assert tuple(n for n, _ in wf.nodes) == STEPS == ("retrieve_context", "decide_promise", "policy_gate",
+                                                      "commit_or_escalate")
+
+
+def test_commit_refuses_without_passing_gate():
+    g = Guard(PromisePolicy(), HashChainAudit(), SimulatedPlanner(), PromiseLedger())
+    with pytest.raises(PermissionError):
+        g.commit("L1", {"type": "full"}, {"verdict": "escalate", "rule": "P2", "approval": None})
+    assert g.ledger.rows == {}
+
+
+def test_every_commit_and_escalation_follows_a_gate_decision(tmp_path):
+    run(n_skus=1500, n_lines=200, seed=9, engine="fallback", out=str(tmp_path))
+    gated, n_final = set(), 0
+    for line in (tmp_path / "audit.jsonl").read_text().splitlines():
+        r = json.loads(line)
+        lid = r["payload"].get("line")
+        if r["event"] == "policy_decision":
+            gated.add(lid)
+        if r["event"] in ("promise_committed", "promise_escalated"):
+            assert lid in gated
+            n_final += 1
+    assert n_final == 200

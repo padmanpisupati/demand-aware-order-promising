@@ -1,4 +1,4 @@
-"""End-to-end demo: train risk model, run governed risk-aware ATP vs naive ATP, score vs simulated actuals."""
+"""End-to-end demo: train risk model, run the governed workflow for risk-aware ATP vs naive ATP, score vs simulated actuals."""
 from __future__ import annotations
 import argparse, json, random, statistics
 from pathlib import Path
@@ -6,7 +6,7 @@ from pathlib import Path
 from . import data as D
 from .atp import actual_completion, naive_promise, realise, supply_for
 from .governance import Guard, HashChainAudit, PromiseLedger, PromisePolicy, SimulatedPlanner
-from .graph import build_graph
+from .graph import build_workflow
 from .risk import RiskModel, evaluate
 
 LATE_TOL = 3  # days of slack before a miss counts as a "backorder surprise"
@@ -49,9 +49,9 @@ def run(n_skus=6000, n_lines=1500, seed=42, engine="auto", out="out", backorder_
     audit = HashChainAudit()
     ledger = PromiseLedger()
     guard = Guard(PromisePolicy(), audit, SimulatedPlanner(), ledger)
-    graph, used_engine = build_graph(model, guard, t50, t80, engine=engine)
+    workflow, used_engine = build_workflow(model, guard, t50, t80, engine=engine)
 
-    agent_rows, naive_rows, outcomes = [], [], {}
+    wf_rows, naive_rows, outcomes = [], [], {}
     candidates = [s for s in test if s["forecast_3_month"] > 0]
     for i in range(n_lines):
         sku = rng.choice(candidates)
@@ -69,19 +69,19 @@ def run(n_skus=6000, n_lines=1500, seed=42, engine="auto", out="out", backorder_
         nv = naive_promise(line, s, t50)
         naive_rows.append({**score(nv, actual_completion(nv, s, world)), "promise_day": nv["promise_day"]})
 
-        st = graph.invoke({"line": line, "sku": sku, "substitute": sub_view})
+        st = workflow.invoke({"line": line, "sku": sku, "substitute": sub_view})
         p, res = st["proposal"], st["result"]
         key = f"{p['type']}/{res['status']}"
         outcomes[key] = outcomes.get(key, 0) + 1
         if res["status"] == "committed":
-            agent_rows.append({**score(p, actual_completion(p, s, world)), "promise_day": p["promise_day"],
+            wf_rows.append({**score(p, actual_completion(p, s, world)), "promise_day": p["promise_day"],
                                "approval": res["approval"], "idx": len(naive_rows) - 1})
         else:
-            agent_rows.append({"escalated": True, "idx": len(naive_rows) - 1, "approval": res["approval"]})
+            wf_rows.append({"escalated": True, "idx": len(naive_rows) - 1, "approval": res["approval"]})
 
-    committed = [r for r in agent_rows if not r.get("escalated")]
+    committed = [r for r in wf_rows if not r.get("escalated")]
     naive_same = [naive_rows[r["idx"]] for r in committed]
-    needs_review = sum(1 for r in agent_rows if r.get("approval") in ("approved", "rejected"))
+    needs_review = sum(1 for r in wf_rows if r.get("approval") in ("approved", "rejected"))
     results = {
         "data_sources": {"backorder": bo_src, "olist": ol_src},
         "engine": used_engine, "risk_model": {"backend": model.backend, **model_eval,
@@ -89,14 +89,14 @@ def run(n_skus=6000, n_lines=1500, seed=42, engine="auto", out="out", backorder_
                                                                        [round(c, 3) for c in model.coef]))},
         "transit_days": {"p50": round(t50, 2), "p80": round(t80, 2)},
         "lines": n_lines, "outcomes": dict(sorted(outcomes.items())),
-        "agent_committed": summarise(committed),
+        "workflow_committed": summarise(committed),
         "naive_same_lines": summarise(naive_same),
         "naive_all_lines": summarise(naive_rows),
         "commit_rate": round(len(committed) / n_lines, 3),
         "escalation_rate": round(1 - len(committed) / n_lines, 3),
         "approval_rate_of_lines": round(needs_review / n_lines, 3),
-        "hitl_approved": sum(1 for r in agent_rows if r.get("approval") == "approved"),
-        "hitl_rejected": sum(1 for r in agent_rows if r.get("approval") == "rejected"),
+        "hitl_approved": sum(1 for r in wf_rows if r.get("approval") == "approved"),
+        "hitl_rejected": sum(1 for r in wf_rows if r.get("approval") == "rejected"),
         "audit_records": len(audit.records), "audit_chain_valid": audit.verify(),
     }
     Path(out).mkdir(parents=True, exist_ok=True)
@@ -109,7 +109,7 @@ def run(n_skus=6000, n_lines=1500, seed=42, engine="auto", out="out", backorder_
 
 
 def render(r: dict) -> str:
-    a, n = r["agent_committed"], r["naive_same_lines"]
+    a, n = r["workflow_committed"], r["naive_same_lines"]
     rows = [("Mean abs promise-date error (days)", "mean_abs_promise_error_days"),
             ("Median abs promise-date error (days)", "median_abs_promise_error_days"),
             ("OTIF proxy", "otif_proxy"), ("Backorder-surprise rate (>3d late)", "backorder_surprise_rate"),
@@ -118,7 +118,7 @@ def render(r: dict) -> str:
              f"Engine: {r['engine']} | lines: {r['lines']} | risk model: {r['risk_model']['backend']}", "",
              "| Metric | Naive ATP | Risk-aware governed ATP |", "|---|---|---|"]
     lines += [f"| {lab} | {n[k]} | {a[k]} |" for lab, k in rows]
-    lines += ["", f"Compared on the {a['lines']} lines the agent committed (same lines, same simulated world).",
+    lines += ["", f"Compared on the {a['lines']} lines the workflow committed (same lines, same simulated world).",
               f"Escalated to planner: {r['escalation_rate']:.1%} | lines routed to HITL: {r['approval_rate_of_lines']:.1%} "
               f"(approved {r['hitl_approved']}, rejected {r['hitl_rejected']})",
               f"Audit records: {r['audit_records']} | hash chain valid: {r['audit_chain_valid']}", "",

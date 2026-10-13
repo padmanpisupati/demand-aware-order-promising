@@ -1,4 +1,4 @@
-# Promise decision flow
+# Promise decision flow (step 2 `decide_promise`, then steps 3–4)
 
 ```mermaid
 flowchart TD
@@ -14,7 +14,7 @@ flowchart TD
   G -- yes --> F5[ALTERNATE DATE<br/>buffered replenishment]
   G -- no --> F6[ESCALATE]
   F1 & F2 & F3 & F4 & F5 --> PG{Policy gate}
-  PG -- allow --> C1[Commit]
+  PG -- allow --> C1[commit_or_escalate: Commit]
   PG -- approval --> H{Planner}
   H -- approve --> C1
   H -- reject --> F6

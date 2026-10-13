@@ -117,23 +117,37 @@ class Guard:
     def __init__(self, policy: PolicyGate, audit: AuditSink, approver: Approver, ledger: PromiseLedger):
         self.policy, self.audit, self.approver, self.ledger = policy, audit, approver, ledger
 
-    def commit_promise(self, line_id: str, ctx: dict) -> dict:
+    def gate(self, line_id: str, ctx: dict) -> dict:
+        """Policy gate with HITL folded in. Returns a verdict; never writes."""
         d = self.policy.evaluate("commit_promise", ctx)
         self.audit.record("policy_decision", "policy_gate", {"line": line_id, "outcome": d.outcome, "rule": d.rule})
-        approved_by = None
         if d.outcome == DENY:
-            return {"status": "escalated", "rule": d.rule, "approval": None}
+            return {"verdict": "escalate", "rule": d.rule, "approval": None}
         if d.outcome == REQUIRE_APPROVAL:
             ok, note = self.approver.review({**ctx["proposal"], "risk": ctx["risk"], "value": ctx["value"]}, d)
             self.audit.record("hitl_review", "planner", {"line": line_id, "approved": ok, "note": note, "rule": d.rule})
             if not ok:
-                return {"status": "escalated", "rule": d.rule, "approval": "rejected"}
-            approved_by = "planner"
-        self.ledger.commit(line_id, ctx["proposal"])
-        self.audit.record("promise_committed", "atp_agent", {"line": line_id, "proposal": ctx["proposal"],
-                                                            "approved_by": approved_by})
-        return {"status": "committed", "rule": d.rule, "approval": "approved" if approved_by else "auto"}
+                return {"verdict": "escalate", "rule": d.rule, "approval": "rejected"}
+            return {"verdict": "commit", "rule": d.rule, "approval": "approved"}
+        return {"verdict": "commit", "rule": d.rule, "approval": "auto"}
+
+    def commit(self, line_id: str, proposal: dict, verdict: dict) -> dict:
+        """The only ERP-style write. Refuses to run without a 'commit' verdict from gate()."""
+        if verdict.get("verdict") != "commit":
+            raise PermissionError("commit requires a passing policy-gate verdict")
+        self.ledger.commit(line_id, proposal)
+        approved_by = "planner" if verdict["approval"] == "approved" else None
+        self.audit.record("promise_committed", "workflow.commit", {"line": line_id, "proposal": proposal,
+                                                                  "approved_by": approved_by})
+        return {"status": "committed", "rule": verdict["rule"], "approval": verdict["approval"]}
+
+    def commit_promise(self, line_id: str, ctx: dict) -> dict:
+        """Convenience: gate then commit (no escalation audit event). Kept for API compatibility."""
+        v = self.gate(line_id, ctx)
+        if v["verdict"] != "commit":
+            return {"status": "escalated", "rule": v["rule"], "approval": v["approval"]}
+        return self.commit(line_id, ctx["proposal"], v)
 
     def rollback(self, line_id: str, reason: str) -> None:
         self.ledger.cancel(line_id)
-        self.audit.record("promise_cancelled", "atp_agent", {"line": line_id, "reason": reason})
+        self.audit.record("promise_cancelled", "workflow.rollback", {"line": line_id, "reason": reason})

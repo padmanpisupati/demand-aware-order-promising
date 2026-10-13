@@ -1,6 +1,6 @@
-# ADR-0001: Risk-aware ATP as a governed agent graph
+# ADR-0001: Risk-aware ATP as a governed agent graph (superseded)
 
-**Status:** accepted
+**Status:** superseded by [ADR-0005](0005-workflow-is-sufficient.md) (2026-10). The graph was already linear; ADR-0005 restates it as a four-step workflow, drops the per-step "agent" framing, and splits the gate from the commit.
 
 **Context.** Classic ATP treats on-hand and inbound supply as certain. Order-management teams then spend effort on customer-facing re-promises when inbound supply slips. We want promises that reflect supply risk, but an ERP promise is a customer commitment that cannot be left to free-form agent behaviour.
 
